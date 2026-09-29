@@ -1,5 +1,5 @@
 // Package craft 是制作系统：按配方消耗材料并产出成品。
-// 缺陷：材料校验与扣减分开做（失败留下半成品）、失败不返还、未解锁配方也能做。
+// 批量制作是原子的：先整批校验，全部通过才一次性扣减；任何失败路径都不改动库存。
 package craft
 
 import "errors"
@@ -18,20 +18,32 @@ type Recipe struct {
 	Unlocked bool
 }
 
-// Craft 制作 count 份。缺陷：逐份扣料，中途不够就直接返回（前面几次的料已经扣掉了）。
+// Craft 制作 count 份。count <= 0 按 1 份处理。
+// 未解锁返回 ErrLocked；任一种材料不够 count 份返回 ErrMaterial；
+// 两种失败都不改动库存。成功时扣料总量 = count × 配方需求。
 func Craft(inventory map[string]int, recipe Recipe, count int) (int, error) {
 	if count <= 0 {
 		count = 1
 	}
-	crafted := 0
-	for index := 0; index < count; index++ {
-		for material, amount := range recipe.Need {
-			if inventory[material] < amount {
-				return crafted, ErrMaterial // 缺陷：已经扣掉的料不返还
-			}
-			inventory[material] -= amount
-		}
-		crafted += recipe.Output
+	if !recipe.Unlocked {
+		return 0, ErrLocked
 	}
-	return crafted, nil
+	// 先整批校验：只读库存，O(配方材料种类)，不扫描整张库存表。
+	// 用除法比较避免 amount*count 溢出。
+	for material, amount := range recipe.Need {
+		if amount <= 0 {
+			continue
+		}
+		if inventory[material]/amount < count {
+			return 0, ErrMaterial
+		}
+	}
+	// 全部够用才一次性扣减。
+	for material, amount := range recipe.Need {
+		if amount <= 0 {
+			continue
+		}
+		inventory[material] -= amount * count
+	}
+	return count * recipe.Output, nil
 }
